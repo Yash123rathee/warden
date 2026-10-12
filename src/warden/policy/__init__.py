@@ -1,4 +1,4 @@
-"""Policy layer for Warden governance: L1/L2 engine, pgvector store, and versions."""
+"""Policy engines and stores for Warden governance."""
 
 from warden.policy.engine import (
     HashEmbeddings,
@@ -6,9 +6,13 @@ from warden.policy.engine import (
     L1L2PolicyEngine,
     L1Verdict,
     L2Verdict,
+    PolicyDecision,
+    PolicyEngine,
+    PolicyError,
     PolicyVectorStore,
     evaluate_l1,
     evaluate_l2,
+    PolicyVerdict,
 )
 from warden.policy.store import (
     POLICIES_TABLE_DDL,
@@ -28,10 +32,14 @@ __all__ = [
     "POLICIES_TABLE_DDL",
     "POLICY_VERSIONS_TABLE_DDL",
     "PgVectorPolicyStore",
+    "PolicyDecision",
+    "PolicyEngine",
+    "PolicyError",
     "PolicyRecord",
     "PolicyVectorStore",
     "PolicyVersionRecord",
     "evaluate_l1",
     "evaluate_l2",
+    "PolicyVerdict",
     "setup_policy_tables",
 ]

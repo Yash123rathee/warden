@@ -1,28 +1,14 @@
-"""L1/L2 PolicyEngine — the seam's policy layer.
+"""Policy engines: the L1/L2 vector policy and L0/L1/L2 layered safety gate.
 
-Two layers, evaluated in order (Yash's task; drop-in replacement for
-`SequencingPolicy` in `warden/seam.py` — identical `evaluate(action) -> str`
-contract, so the seam and the multi-agent graph need no edits):
+The L1/L2 engine provides deterministic rules and vector-policy matching.
+The layered engine combines static checks, DeBERTa injection scoring, and
+Clef risk scoring. Both fail closed for unrecognized or unavailable policy
+checks.
 
-**L1 — fast deterministic rules.** Zero IO, payload-aware: destructive SQL
-(patterns like DROP TABLE / DELETE FROM / TRUNCATE) -> `deny` (terminal,
-lock 5); risky tool names (send_email, run_shell...) -> `escalate` to a
-human gate; everything else -> `allow`. L1 verdicts are FINAL: L2 never
-runs for an L1 match (a fast deny must not wait on a vector search).
-
-**L2 — semantic similarity.** For actions L1 does not recognize: embed the
-action's text form and retrieve the most-similar stored policy; if
-similarity >= threshold, that policy's verdict applies; if nothing is
-similar enough, fail closed to `escalate` (NOT allow — an unrecognized
-action goes to a human rather than through unreviewed).
-
-Dependency rule honored: this module imports nothing from app/ or agents/
-(the governance kernel is a library; FastAPI and graphs are its callers).
-
-The L2 store is behind `PolicyVectorStore` (two adapters ship here:
-in-memory for tests/CLI; a pgvector-backed adapter belongs to Parth's
-policy-store work — implement `add`/`search` against DB row + embedding
-and this engine does not change).
+The layered engine maps decisions to executor outcomes:
+  allow    -> continue to sandbox/LLM
+  escalate -> journal gate_requested -> Pending (HITL inbox)
+  deny     -> journal denied, TERMINAL (no human override)
 """
 
 from __future__ import annotations
@@ -30,10 +16,14 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Protocol
 
 from langchain_core.embeddings import Embeddings
 
+from warden.policy.layer_clef import ClefScores, ClefUnavailable, FakeClefClient
+from warden.policy.layer_deberta import FakeInjectionScorer, InjectionScorer
+from warden.policy.layers_static import action_text, find_static_violation
 from warden.models import Action
 
 logger = logging.getLogger("warden.policy")
@@ -293,3 +283,115 @@ class HashEmbeddings(Embeddings):
 
     def embed_query(self, text: str) -> list[float]:
         return self._embed(text)
+
+
+class PolicyDecision(str, Enum):
+    ALLOW = "allow"
+    ESCALATE = "escalate"
+    DENY = "deny"
+
+
+class PolicyError(RuntimeError):
+    """Layer infrastructure failed. Caller must fail closed."""
+
+
+@dataclass(frozen=True)
+class PolicyVerdict:
+    decision: PolicyDecision
+    reason: str
+    policy: str
+    layer: str
+    scores: dict[str, float]
+
+
+@dataclass
+class PolicyEngine:
+    deny_threshold: float = 0.85
+    clean_threshold: float = 0.20
+    scorer: InjectionScorer | None = None
+    clef: FakeClefClient | object = None
+
+    def __post_init__(self) -> None:
+        if self.scorer is None:
+            self.scorer = FakeInjectionScorer()
+        if self.clef is None:
+            self.clef = FakeClefClient()
+
+    def evaluate(
+        self,
+        action_name: str,
+        payload: dict[str, object],
+        role: str = "operator",
+    ) -> PolicyVerdict:
+        text = action_text(action_name, payload)
+
+        # L0 — static deny list.
+        if (policy_id := find_static_violation(text)) is not None:
+            return PolicyVerdict(
+                decision=PolicyDecision.DENY,
+                reason=f"static rule matched: {policy_id}",
+                policy=policy_id,
+                layer="L0-static",
+                scores={},
+            )
+
+        # L1 — DeBERTa injection score.
+        assert self.scorer is not None
+        try:
+            injection = self.scorer.score(text)
+        except RuntimeError as exc:
+            raise PolicyError(f"L1 deberta unavailable: {exc}") from exc
+        if injection.score >= self.deny_threshold:
+            return PolicyVerdict(
+                decision=PolicyDecision.DENY,
+                reason=f"prompt injection p={injection.score:.2f}",
+                policy="prompt-injection",
+                layer="L1-deberta",
+                scores={"injection": injection.score},
+            )
+        if injection.score <= self.clean_threshold:
+            l1_clean = injection.score
+        else:
+            l1_clean = injection.score  # uncertain band -> consult L2 below
+
+        # L2 — Clef privilege / side-effect / injection re-check.
+        try:
+            # mypy: clef adapters share judge() shape; typed as object-safe call.
+            judge = getattr(self.clef, "judge")
+            scores: ClefScores = judge(
+                state=text, tool=action_name,
+                args=str(payload.get("args", payload)), role=role,
+            )
+        except ClefUnavailable as exc:
+            raise PolicyError(f"L2 clef unavailable: {exc}") from exc
+
+        worst = max(scores.injection, scores.privilege_creep, scores.side_effect)
+        merged = {
+            "l1_injection": l1_clean,
+            "clef_injection": scores.injection,
+            "privilege_creep": scores.privilege_creep,
+            "side_effect": scores.side_effect,
+        }
+        if worst >= self.deny_threshold:
+            return PolicyVerdict(
+                decision=PolicyDecision.DENY,
+                reason=f"clef risk p={worst:.2f} ({scores.model})",
+                policy="clef-risk",
+                layer="L2-clef",
+                scores=merged,
+            )
+        if worst <= self.clean_threshold and l1_clean <= self.clean_threshold:
+            return PolicyVerdict(
+                decision=PolicyDecision.ALLOW,
+                reason="L1 clean + Clef clean",
+                policy="default-allow",
+                layer="L2-clef",
+                scores=merged,
+            )
+        return PolicyVerdict(
+            decision=PolicyDecision.ESCALATE,
+            reason=f"uncertain risk p={worst:.2f} needs human",
+            policy="uncertain-hitl",
+            layer="L2-clef",
+            scores=merged,
+        )

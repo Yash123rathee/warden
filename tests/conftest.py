@@ -1,4 +1,4 @@
-"""Shared test fixtures: a real PostgreSQL (bundled via pgserver)."""
+"""Shared test fixtures: PostgreSQL (via configured URI or bundled pgserver)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import sys
 import tempfile
 from collections.abc import Iterator
 
-import pgserver
 import pytest
 
 # psycopg async mode is incompatible with Windows' default ProactorEventLoop;
@@ -16,14 +15,22 @@ import pytest
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+from warden.config import settings
+
 
 @pytest.fixture(scope="session")
 def pg_uri() -> Iterator[str]:
-    """Session-scoped PostgreSQL over a UNIX socket (no root required)."""
+    """Session-scoped PostgreSQL URI."""
+    if settings.postgres_uri:
+        yield settings.postgres_uri
+        return
+
+    import pgserver  # type: ignore[import-not-found]
+
     dbdir = tempfile.mkdtemp(prefix="warden-pg-")
-    srv = pgserver.get_server(dbdir)  # type: ignore[attr-defined]
+    srv = pgserver.get_server(dbdir)
     try:
-        yield srv.get_uri()
+        yield str(srv.get_uri())
     finally:
         try:
             srv.cleanup()
