@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
+import sys
 import tempfile
 from collections.abc import Iterator
 
 import pgserver
 import pytest
+
+# psycopg async mode is incompatible with Windows' default ProactorEventLoop;
+# the selector loop is required for AsyncPostgresSaver tests on Windows.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 @pytest.fixture(scope="session")
