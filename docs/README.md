@@ -61,6 +61,7 @@ This directory contains shared architecture, API, data model, security, testing,
 |---|---|---|
 | [`TESTING_STRATEGY.md`](TESTING_STRATEGY.md) | Test inventory, scenarios, acceptance criteria | Available |
 | [`SECURITY_MODEL.md`](SECURITY_MODEL.md) | Threat model, enforcement posture, unresolved risks | Available |
+| [`AUDIT_LOG.md`](AUDIT_LOG.md) | Write-ahead journal, hash chaining, OWASP protections | Available |
 | [`REALTIME_EVENTS.md`](REALTIME_EVENTS.md) | HTMX polling, SSE contracts | Available |
 
 ---

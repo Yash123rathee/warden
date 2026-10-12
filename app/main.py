@@ -7,6 +7,11 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from app.agents import router as agents_router
+from app.audit import router as audit_router
+from app.policies import router as policies_router
+from app.leases import router as leases_router
+from app.traces import router as traces_router
+from app.sandbox import router as sandbox_router
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -14,6 +19,11 @@ STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(title="Warden AI Governance Console", version="2.0.0")
 app.include_router(agents_router)
+app.include_router(audit_router)
+app.include_router(policies_router)
+app.include_router(leases_router)
+app.include_router(traces_router)
+app.include_router(sandbox_router)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
